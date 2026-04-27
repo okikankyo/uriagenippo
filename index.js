@@ -48,6 +48,17 @@ function parseDate(text) {
   return null;
 }
 
+function isAllowedChannel(channelId) {
+  const allowed = (process.env.ALLOWED_CHANNEL_IDS || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean);
+
+  if (!allowed.length) return true;
+
+  return allowed.includes(channelId);
+}
+
 async function getAccessToken() {
   const now = Math.floor(Date.now() / 1000);
 
@@ -116,10 +127,6 @@ async function registerToKintone(data) {
     record[field.code] = { value };
   });
 
-  // 合計フィールドが「計算」フィールドなら送信不要。
-  // 数値フィールドとして作っている場合だけ送信したい時は下を有効化。
-  // record['合計'] = { value: total };
-
   await axios.post(
     `https://${process.env.KINTONE_SUBDOMAIN}.cybozu.com/k/v1/record.json`,
     {
@@ -163,10 +170,19 @@ app.post('/', async (req, res) => {
 
     const channelId = body.source?.channelId;
     const userId = body.source?.userId;
+
+    if (!channelId || !userId) {
+      console.log('channelId または userId なし');
+      return;
+    }
+
+    if (!isAllowedChannel(channelId)) {
+      await sendMessage(channelId, 'このBOTは指定された経理チャンネルでのみ利用できます。');
+      return;
+    }
+
     const userKey = `${channelId}:${userId}`;
     const text = body.content.text.trim();
-
-    if (!channelId || !userId) return;
 
     if (text === '開始' || text.toLowerCase() === 'start') {
       startSession(userKey);

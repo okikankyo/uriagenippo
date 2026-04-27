@@ -7,25 +7,41 @@ app.use(express.json());
 
 const sessions = {};
 
-const FIELDS = [
-  { code: 'ちゃんぷるー', label: 'ちゃんぷるー' },
-  { code: 'サーター屋', label: 'サーター屋' },
-  { code: '入園口現金', label: '入園口現金' },
-  { code: '入園口クーポン', label: '入園口クーポン' },
-  { code: '玉那覇家', label: '玉那覇家' },
-  { code: 'ポーポー屋', label: 'ポーポー屋' },
-  { code: 'ドリンク', label: 'ドリンク' },
-  { code: '体験会場', label: '体験会場' },
-  { code: 'ハラペッコ', label: 'ハラペッコ' },
-  { code: '治五郎', label: '治五郎' },
-  { code: 'カメラ屋', label: 'カメラ屋' },
-  { code: '真珠屋', label: '真珠屋' },
-  { code: 'てぃだ屋', label: 'てぃだ屋' },
-  { code: 'その他', label: 'その他' }
+const GROUPS = [
+  [
+    { code: 'ちゃんぷるー', label: 'ちゃんぷるー' },
+    { code: 'サーター屋', label: 'サーター屋' },
+    { code: '入園口現金', label: '入園口現金' }
+  ],
+  [
+    { code: '入園口クーポン', label: '入園口クーポン' },
+    { code: '玉那覇家', label: '玉那覇家' },
+    { code: 'ポーポー屋', label: 'ポーポー屋' }
+  ],
+  [
+    { code: 'ドリンク', label: 'ドリンク' },
+    { code: '体験会場', label: '体験会場' },
+    { code: 'ハラペッコ', label: 'ハラペッコ' }
+  ],
+  [
+    { code: '治五郎', label: '治五郎' },
+    { code: 'カメラ屋', label: 'カメラ屋' },
+    { code: '真珠屋', label: '真珠屋' }
+  ],
+  [
+    { code: 'てぃだ屋', label: 'てぃだ屋' },
+    { code: 'その他', label: 'その他' }
+  ]
 ];
 
-function normalizeNumber(text) {
-  return Number(String(text || '').replace(/,/g, '').replace(/円/g, '').trim()) || 0;
+function parseNumbers(text) {
+  return String(text || '')
+    .replace(/円/g, '')
+    .replace(/,/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(v => Number(v) || 0);
 }
 
 function formatYen(n) {
@@ -59,6 +75,14 @@ function isAllowedChannel(channelId) {
   return allowed.includes(channelId);
 }
 
+function buildGroupQuestion(groupIndex) {
+  const group = GROUPS[groupIndex];
+
+  const labels = group.map((f, i) => `${i + 1}. ${f.label}`).join('\n');
+
+  return `以下の売上を順番に入力してください。\n\n${labels}\n\n例：${group.map(() => '0').join(' ')}`;
+}
+
 async function getAccessToken() {
   const now = Math.floor(Date.now() / 1000);
 
@@ -88,7 +112,11 @@ async function getAccessToken() {
   const res = await axios.post(
     'https://auth.worksmobile.com/oauth2/v2.0/token',
     params,
-    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    }
   );
 
   return res.data.access_token;
@@ -121,7 +149,7 @@ async function registerToKintone(data) {
 
   let total = 0;
 
-  FIELDS.forEach(field => {
+  GROUPS.flat().forEach(field => {
     const value = Number(data.values[field.code] || 0);
     total += value;
     record[field.code] = { value };
@@ -148,7 +176,7 @@ function startSession(userKey) {
   sessions[userKey] = {
     step: 'date',
     date: '',
-    index: 0,
+    groupIndex: 0,
     values: {}
   };
 }
@@ -184,7 +212,7 @@ app.post('/', async (req, res) => {
     const userKey = `${channelId}:${userId}`;
     const text = body.content.text.trim();
 
-    if (text === '開始' || text.toLowerCase() === 'start') {
+    if (text === '開始' || text === 'スタート' || text.toLowerCase() === 'start') {
       startSession(userKey);
       await sendMessage(
         channelId,
@@ -221,30 +249,33 @@ app.post('/', async (req, res) => {
       }
 
       session.date = date;
-      session.step = 'values';
-      session.index = 0;
+      session.step = 'groups';
+      session.groupIndex = 0;
 
-      await sendMessage(
-        channelId,
-        `${FIELDS[0].label}の売上を入力してください。`
-      );
+      await sendMessage(channelId, buildGroupQuestion(0));
       return;
     }
 
-    if (session.step === 'values') {
-      const currentField = FIELDS[session.index];
-      const value = normalizeNumber(text);
+    if (session.step === 'groups') {
+      const group = GROUPS[session.groupIndex];
+      const nums = parseNumbers(text);
 
-      session.values[currentField.code] = value;
-      session.index += 1;
-
-      if (session.index < FIELDS.length) {
-        const nextField = FIELDS[session.index];
-
+      if (nums.length !== group.length) {
         await sendMessage(
           channelId,
-          `${nextField.label}の売上を入力してください。`
+          `入力数が違います。\n${group.length}個入力してください。\n\n${buildGroupQuestion(session.groupIndex)}`
         );
+        return;
+      }
+
+      group.forEach((field, index) => {
+        session.values[field.code] = nums[index];
+      });
+
+      session.groupIndex += 1;
+
+      if (session.groupIndex < GROUPS.length) {
+        await sendMessage(channelId, buildGroupQuestion(session.groupIndex));
         return;
       }
 
